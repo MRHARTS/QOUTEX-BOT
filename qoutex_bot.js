@@ -14,6 +14,7 @@ Environment variables (.env):
   HEADLESS=false
   DEBUG_WS=false
   ALLOWED_ASSETS= (comma separated list, optional)
+  SIGNALS_STATE=signals_state.json
 Install:
   npm init -y
   npm i playwright technicalindicators dotenv node-fetch
@@ -22,6 +23,7 @@ Run:
   node qoutex_bot.js
 */
 require('dotenv').config();
+const fs = require('fs');
 const { chromium } = require('playwright');
 const { SMA, ATR } = require('technicalindicators');
 const fetch = require('node-fetch');
@@ -40,17 +42,57 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || null;
 const HEADLESS = (process.env.HEADLESS || 'false').toLowerCase() === 'true';
 const DEBUG_WS = (process.env.DEBUG_WS || 'false').toLowerCase() === 'true';
 const ALLOWED_ASSETS = (process.env.ALLOWED_ASSETS || '').split(',').map(s => s.trim()).filter(Boolean);
+const SIGNALS_STATE_FILE = process.env.SIGNALS_STATE || 'signals_state.json';
 
 const MAX_WINDOW = 300; // keep last N candles per asset/timeframe
 
 // store candles per key = `${asset}|${timeframe}`
 const store = new Map();
+let signalsState = {};
+let saveScheduled = null;
+
+function loadSignalsState() {
+  try {
+    if (fs.existsSync(SIGNALS_STATE_FILE)) {
+      const txt = fs.readFileSync(SIGNALS_STATE_FILE, 'utf8');
+      signalsState = JSON.parse(txt || '{}');
+      console.log('Loaded signals state from', SIGNALS_STATE_FILE);
+    } else {
+      signalsState = {};
+    }
+  } catch (e) {
+    console.warn('Failed to load signals state:', e.message);
+    signalsState = {};
+  }
+}
+
+function scheduleSaveSignalsState() {
+  if (saveScheduled) return;
+  saveScheduled = setTimeout(() => {
+    try {
+      fs.writeFileSync(SIGNALS_STATE_FILE, JSON.stringify(signalsState, null, 2));
+      if (DEBUG_WS) console.log('Saved signals state to', SIGNALS_STATE_FILE);
+    } catch (e) {
+      console.error('Failed to save signals state:', e);
+    }
+    saveScheduled = null;
+  }, 1000);
+}
+
+function getSavedSignalId(key) {
+  return signalsState[key] || null;
+}
+
+function setSavedSignalId(key, signalId) {
+  signalsState[key] = signalId;
+  scheduleSaveSignalsState();
+}
 
 function storeKey(asset, timeframe) { return `${asset}|${timeframe}`; }
 
 function pushCandle(asset, timeframe, candle) {
   const key = storeKey(asset, timeframe);
-  if (!store.has(key)) store.set(key, { candles: [], lastSignalId: null });
+  if (!store.has(key)) store.set(key, { candles: [], lastSignalId: getSavedSignalId(key) || null });
   const b = store.get(key);
   // ensure unique by time
   const last = b.candles[b.candles.length - 1];
@@ -186,6 +228,7 @@ async function maybeEmitSignal(asset, timeframe, bucket) {
   const signalId = `${signal}|${lastCandle.time}`;
   if (bucket.lastSignalId === signalId) return; // avoid duplicates
   bucket.lastSignalId = signalId;
+  setSavedSignalId(storeKey(asset, timeframe), signalId);
 
   const out = {
     ts: new Date().toISOString(),
@@ -211,12 +254,13 @@ async function sendTelegram(text) {
   }
 }
 
+loadSignalsState();
+
 (async () => {
   console.log('Starting Quotex Node bot...');
   const browser = await chromium.launch({ headless: HEADLESS, args: ['--disable-features=IsolateOrigins,site-per-process'] });
   // try to reuse storage state if exists
   const context = await (async () => {
-    const fs = require('fs');
     if (fs.existsSync(STORAGE_STATE)) {
       console.log('Using existing storage state:', STORAGE_STATE);
       return await browser.newContext({ storageState: STORAGE_STATE });
