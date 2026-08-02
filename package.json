@@ -1,0 +1,16 @@
+{
+  "name": "qoutex-bot-web",
+  "version": "1.0.0",
+  "description": "Quotex bot with web UI",
+  "main": "web_server.js",
+  "scripts": {
+    "start:web": "node web_server.js",
+    "start:bot": "node qoutex_bot.js",
+    "start": "node web_server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.13.0",
+    "dotenv": "^16.0.3"
+  }
+}
