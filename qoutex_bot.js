@@ -11,12 +11,15 @@ Environment variables (.env):
   ATR_THRESHOLD_PCT=0.01   (ATR / price must be < this)
   TELEGRAM_BOT_TOKEN (optional)
   TELEGRAM_CHAT_ID (optional)
+  HEADLESS=false
+  DEBUG_WS=false
+  ALLOWED_ASSETS= (comma separated list, optional)
 Install:
   npm init -y
   npm i playwright technicalindicators dotenv node-fetch
   npx playwright install chromium
 Run:
-  node quotex_bot.js
+  node qoutex_bot.js
 */
 require('dotenv').config();
 const { chromium } = require('playwright');
@@ -33,6 +36,10 @@ const ATR_THRESHOLD_PCT = parseFloat(process.env.ATR_THRESHOLD_PCT || '0.01'); /
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || null;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || null;
+
+const HEADLESS = (process.env.HEADLESS || 'false').toLowerCase() === 'true';
+const DEBUG_WS = (process.env.DEBUG_WS || 'false').toLowerCase() === 'true';
+const ALLOWED_ASSETS = (process.env.ALLOWED_ASSETS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 const MAX_WINDOW = 300; // keep last N candles per asset/timeframe
 
@@ -57,32 +64,75 @@ function pushCandle(asset, timeframe, candle) {
   return b;
 }
 
+// --- improved formatSignalText ---
+function formatSignalText(obj) {
+  return `Signal: ${obj.signal}\nAsset: ${obj.asset}\nTF: ${obj.timeframe}\nPrice: ${obj.price}\nSMA${SHORT_SMA}: ${Number(obj.smaShort).toFixed(5)}\nSMA${LONG_SMA}: ${Number(obj.smaLong).toFixed(5)}\nATR: ${Number(obj.atr).toFixed(8)}\nATR%: ${(Number(obj.atrRatio) * 100).toFixed(4)}%`;
+}
+
+// --- stronger detection for candle-like payloads ---
 function detectCandlePayload(obj) {
-  // heuristics: object contains open/high/low/close or o/h/l/c
   if (!obj || typeof obj !== 'object') return null;
-  // Common shapes: {o,h,l,c,t,volume} or {open,high,low,close,time,volume}
-  const lower = keys => keys.every(k => (k in obj) || (k.toLowerCase() in obj));
-  if (lower(['o','h','l','c','t']) || lower(['open','high','low','close','time'])) {
-    // We'll normalize later
+
+  // If the object itself is an array of candles
+  if (Array.isArray(obj) && obj.length && typeof obj[0] === 'object') {
     return obj;
   }
-  // other common shape: nested objects: {candles: [...]}, or {data: {...}}
-  if ('candles' in obj && Array.isArray(obj.candles) && obj.candles.length) {
-    return obj.candles; // caller can handle array
+
+  // Direct fields
+  const hasOHLC = ['o','h','l','c','t'].every(k => (k in obj)) ||
+                  ['open','high','low','close','time'].every(k => (k in obj));
+  if (hasOHLC) return obj;
+
+  // Nested common containers
+  if ('candles' in obj && Array.isArray(obj.candles) && obj.candles.length) return obj.candles;
+  if ('data' in obj && (typeof obj.data === 'object')) {
+    const d = obj.data;
+    if (Array.isArray(d)) return d;
+    if (['open','high','low','close','time'].some(k => k in d) || ['o','h','l','c','t'].some(k => k in d)) return d;
   }
+  if ('payload' in obj) return detectCandlePayload(obj.payload);
+  if ('message' in obj) return detectCandlePayload(obj.message);
+  if ('result' in obj) return detectCandlePayload(obj.result);
+
   return null;
 }
 
+// --- normalize, validate, and normalize time (ms) ---
 function normalizeCandle(raw) {
-  // Accept many forms and normalize to {time, open, high, low, close, volume}
+  if (!raw || typeof raw !== 'object') return null;
   const r = raw;
-  // Try fields with common names
-  const time = (r.time || r.t || r[0] || r.timestamp) ;
-  const open = parseFloat(r.open ?? r.o ?? r[1] ?? r.open_price ?? NaN);
-  const high = parseFloat(r.high ?? r.h ?? r[2] ?? r.high_price ?? NaN);
-  const low = parseFloat(r.low ?? r.l ?? r[3] ?? r.low_price ?? NaN);
-  const close = parseFloat(r.close ?? r.c ?? r[4] ?? r.close_price ?? NaN);
-  const volume = parseFloat(r.volume ?? r.v ?? 0);
+
+  // Extract possible numeric time fields and normalize to ms integer
+  let time = r.time ?? r.t ?? r.timestamp ?? r[0] ?? null;
+  if (typeof time === 'string' && /^\d+$/.test(time)) time = Number(time);
+  if (typeof time === 'number') {
+    // if seconds (10-digit), convert to ms
+    if (time > 1e9 && time < 1e11) time = Math.floor(time * 1000);
+    // if already ms (13+ digits) keep as-is
+    time = Math.floor(time);
+  }
+
+  const parseNum = v => {
+    if (v === undefined || v === null) return NaN;
+    if (typeof v === 'number') return v;
+    const s = String(v).replace(/[, ]+/g, '');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : NaN;
+  };
+
+  const open = parseNum(r.open ?? r.o ?? r[1] ?? r.open_price ?? r.openPrice);
+  const high = parseNum(r.high ?? r.h ?? r[2] ?? r.high_price ?? r.highPrice);
+  const low  = parseNum(r.low  ?? r.l ?? r[3] ?? r.low_price  ?? r.lowPrice);
+  const close = parseNum(r.close ?? r.c ?? r[4] ?? r.close_price ?? r.closePrice);
+  const volume = parseNum(r.volume ?? r.v ?? r[5] ?? 0);
+
+  // Validate final values
+  if (![open, high, low, close].every(Number.isFinite)) return null;
+  if (!time || isNaN(time)) {
+    // If time missing, fallback to Date.now()
+    time = Date.now();
+  }
+
   return {
     time,
     open, high, low, close, volume
@@ -148,10 +198,6 @@ async function maybeEmitSignal(asset, timeframe, bucket) {
   }
 }
 
-function formatSignalText(obj) {
-  return `Signal: ${obj.signal}\nAsset: ${obj.asset}\nTF: ${obj.timeframe}\nPrice: ${obj.price}\nSMA${SHORT_SMA}: ${obj.smaShort.toFixed(5)}\nSMA${LONG_SMA}: ${obj.smaLong.toFixed(5)}\nATR: ${obj.atr.toFixed(6)}\nATR%: ${(obj.atrRatio*100).toFixed(3)}%`;
-}
-
 async function sendTelegram(text) {
   try {
     const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -167,7 +213,7 @@ async function sendTelegram(text) {
 
 (async () => {
   console.log('Starting Quotex Node bot...');
-  const browser = await chromium.launch({ headless: false, args: ['--disable-features=IsolateOrigins,site-per-process'] });
+  const browser = await chromium.launch({ headless: HEADLESS, args: ['--disable-features=IsolateOrigins,site-per-process'] });
   // try to reuse storage state if exists
   const context = await (async () => {
     const fs = require('fs');
@@ -196,6 +242,9 @@ async function sendTelegram(text) {
       console.log('WebSocket created:', ws.url());
       ws.on('framereceived', async frame => {
         const payload = frame.payload;
+        if (DEBUG_WS) {
+          try { console.log('RAW_WS_FRAME', payload); } catch (e) {}
+        }
         let parsed = null;
         try {
           parsed = JSON.parse(payload);
@@ -224,15 +273,19 @@ async function sendTelegram(text) {
             if (Array.isArray(candidate)) {
               for (const c of candidate) {
                 const nc = normalizeCandle(c);
+                if (!nc) continue;
                 // asset/timeframe may be missing, attempt to extract from frame or ws.url or it object
                 const asset = (it.asset || it.instrument || it.symbol) || extractAssetFromUrl(ws.url()) || 'unknown';
+                if (ALLOWED_ASSETS.length && !ALLOWED_ASSETS.includes(asset)) continue;
                 const tf = (it.timeframe || it.interval || it.tf) || extractTfFromUrl(ws.url()) || 'unknown';
                 const bucket = pushCandle(asset, tf, nc);
                 await maybeEmitSignal(asset, tf, bucket);
               }
             } else {
               const nc = normalizeCandle(candidate);
+              if (!nc) continue;
               const asset = (it.asset || it.instrument || it.symbol) || extractAssetFromUrl(ws.url()) || 'unknown';
+              if (ALLOWED_ASSETS.length && !ALLOWED_ASSETS.includes(asset)) continue;
               const tf = (it.timeframe || it.interval || it.tf) || extractTfFromUrl(ws.url()) || 'unknown';
               const bucket = pushCandle(asset, tf, nc);
               await maybeEmitSignal(asset, tf, bucket);
@@ -246,25 +299,30 @@ async function sendTelegram(text) {
   });
 
   console.log('Playwright setup complete. Listening for websocket frames in browser session.');
-  console.log('If you want headless runs later, set headless: true and ensure storageState.json is valid.');
+  console.log('If you want headless runs later, set HEADLESS=true and ensure storageState.json is valid.');
   // keep process alive
 })();
 
 function extractAssetFromUrl(url) {
-  // simple heuristics for asset names in ws url, adapt if needed
   try {
+    if (!url) return null;
     const u = new URL(url);
-    const path = u.pathname + u.search;
-    const m = path.match(/(EURUSD|AUDUSD|BTCUSD|[A-Z]{3,6}[_\-]?\w*)/i);
+    const path = (u.pathname + (u.search || '')).toUpperCase();
+    // common tickers: look for patterns like EURUSD, BTCUSD, EURUSD_OTC etc.
+    const m = path.match(/([A-Z]{3,6}[_\-]?[A-Z0-9]{0,6})/);
     if (m) return m[1];
   } catch (e) {}
   return null;
 }
 function extractTfFromUrl(url) {
   try {
+    if (!url) return null;
     const u = new URL(url);
-    const m = u.search.match(/interval=(\d+)/) || u.pathname.match(/_(\d+)s/);
-    if (m) return m[1];
+    const s = u.search || '';
+    const m1 = s.match(/interval=(\d+)/);
+    if (m1) return m1[1];
+    const m2 = (u.pathname || '').match(/_(\d+)[sS]$/);
+    if (m2) return m2[1];
   } catch (e) {}
   return null;
 }
