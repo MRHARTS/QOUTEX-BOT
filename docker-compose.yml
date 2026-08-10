@@ -1,14 +1,10 @@
-version: '3.8'
+version: '3.7'
 services:
-  qoutex-bot:
+  app:
     build: .
-    container_name: qoutex_bot
-    restart: unless-stopped
-    env_file:
-      - .env
+    ports:
+      - "8501:8501"
     volumes:
-      - ./storage:/app/storage
-      - ./signals:/app/state
-      - ./storageState.json:/app/storageState.json
-      - ./signals_state.json:/app/signals_state.json
-    network_mode: bridge
+      - ./:/app
+    environment:
+      - PYTHONUNBUFFERED=1

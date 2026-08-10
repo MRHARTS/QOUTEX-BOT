@@ -1,19 +1,12 @@
-FROM mcr.microsoft.com/playwright:focal
+FROM python:3.10-slim
 
 WORKDIR /app
 
-# Copy package.json if present to leverage cache
-COPY package.json package-lock.json* ./
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install dependencies if package.json exists
-RUN if [ -f package.json ]; then npm ci --production || npm install --production; fi
+COPY . .
 
-# Copy app
-COPY . /app
+EXPOSE 8501
 
-# Ensure storage and signals state are writable
-VOLUME ["/app/storage", "/app/state"]
-
-ENV NODE_ENV=production
-
-CMD ["node", "qoutex_bot.js"]
+CMD ["streamlit", "run", "src/app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

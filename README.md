@@ -1,25 +1,25 @@
 # QOUTEX-BOT
 
-This repository contains a Node.js Playwright-based signal generator for Quotex. It intercepts WebSocket frames in the browser session, extracts candles, and runs a simple SMA crossover + ATR filter strategy to produce BUY/SELL signals.
+This repository is the MVP signal-generator for public testing.
 
-Quickstart
-1. Copy `.env.example` to `.env` and edit as needed.
-2. Install dependencies:
-   npm install
-   npx playwright install chromium
-3. Run locally (interactive login first):
-   DEBUG_WS=true HEADLESS=false node qoutex_bot.js
+Features:
+- 1-minute-first data connectors (Binance via ccxt, stocks/forex via yfinance public endpoints)
+- Explainable SMA + RSI signal generator
+- Streamlit dashboard to select symbol/timeframe, run analysis, and view signals
+- Docker + docker-compose for local run
 
-Docker
-Build and run with docker-compose:
-  docker-compose build
-  docker-compose up -d
+Quick start (local, public-data-only):
 
-Backtesting
-Provide a CSV of historical candles with header `time,open,high,low,close,volume` and run:
-  node backtest.js path/to/candles.csv
+1. Clone the repo
+   git clone https://github.com/MRHARTS/QOUTEX-BOT.git
+2. Build & run with Docker Compose (recommended):
+   docker-compose up --build
 
-Notes
-- The bot saves login session state in storageState.json after the first interactive login.
-- Signals are persisted to `signals_state.json` to avoid duplicate alerts across restarts.
-- This project generates signals only; it does not place trades.
+Or run directly with Python (requires python 3.10+):
+
+1. python -m venv .venv
+2. source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+3. pip install -r requirements.txt
+4. streamlit run src/app/streamlit_app.py
+
+License: MIT
