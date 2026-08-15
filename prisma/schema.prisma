@@ -1,0 +1,367 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USERS ====================
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  watchlists  Watchlist[]
+  alerts      Alert[]
+  tradeJournal TradeJournal[]
+}
+
+// ==================== CHAINS ====================
+model Chain {
+  id            String   @id @default(cuid())
+  name          String   @unique // "Solana", "Ethereum", etc
+  chainId       String   @unique // "solana", "ethereum"
+  displayName   String
+  isSupported   Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tokens            Token[]
+  liquidityPools    LiquidityPool[]
+  tokenLaunches     TokenLaunch[]
+  marketSnapshots   MarketSnapshot[]
+}
+
+// ==================== TOKENS ====================
+model Token {
+  id            String   @id @default(cuid())
+  address       String   // Contract address
+  chain         Chain    @relation(fields: [chainId], references: [id])
+  chainId       String
+  name          String
+  symbol        String
+  decimals      Int
+  totalSupply   String   // Stored as string for precision
+  circulatingSupply String?
+  logoUrl       String?
+  website       String?
+  twitter       String?
+  discord       String?
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([address, chainId])
+  @@index([chainId])
+
+  holders           Holder[]
+  liquidityPools    LiquidityPool[]
+  transactions      Transaction[]
+  tokenLaunches     TokenLaunch[]
+  marketSnapshots   MarketSnapshot[]
+  securityScans     SecurityScan[]
+  riskScores        RiskScore[]
+  momentumScores    MomentumScore[]
+  watchlistItems    WatchlistItem[]
+  trades            TradeJournal[]
+}
+
+// ==================== MARKET DATA ====================
+model MarketSnapshot {
+  id                String   @id @default(cuid())
+  token             Token    @relation(fields: [tokenId], references: [id])
+  tokenId           String
+  chain             Chain    @relation(fields: [chainId], references: [id])
+  chainId           String
+  price             String   // Current price in USD
+  marketCap         String   // Market cap in USD
+  fullyDilutedValuation String? // FDV in USD
+  volume24h         String   // 24h volume
+  priceChange1h     Float?   // Percentage
+  priceChange24h    Float?   // Percentage
+  ath               String?  // All-time high
+  atl               String?  // All-time low
+  source            String   // "coingecko", "solscan", etc
+  confidence        String   @default("medium") // low, medium, high
+  timestamp         DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([chainId])
+  @@index([timestamp])
+}
+
+// ==================== LIQUIDITY ====================
+model LiquidityPool {
+  id            String   @id @default(cuid())
+  address       String   // Pool contract address
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  chain         Chain    @relation(fields: [chainId], references: [id])
+  chainId       String
+  dexName       String   // "Raydium", "Orca", etc
+  totalLiquidity String  // Total liquidity in USD
+  tokenReserve  String   // Token amount in pool
+  nativeReserve String   // SOL/Native token amount
+  createdAt     DateTime // Pool creation time
+  removedAt     DateTime? // If liquidity was removed
+  updatedAt     DateTime @updatedAt
+
+  @@index([tokenId])
+  @@index([chainId])
+}
+
+// ==================== HOLDERS ====================
+model Holder {
+  id          String   @id @default(cuid())
+  token       Token    @relation(fields: [tokenId], references: [id])
+  tokenId     String
+  walletAddress String
+  balance     String   // Amount held
+  percentage  Float    // Percentage of total supply
+  usdValue    String?  // Estimated USD value
+  walletType  String   @default("unknown") // "lp", "burn", "exchange", "deployer", "unknown"
+  rank        Int      // 1, 2, 3, etc
+  timestamp   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tokenId, walletAddress])
+  @@index([tokenId])
+  @@index([rank])
+}
+
+// ==================== WALLETS ====================
+model Wallet {
+  id            String   @id @default(cuid())
+  address       String   @unique
+  label         String?  // User-assigned label
+  balance       String?  // Current balance
+  winRate       Float?   // Percentage of profitable trades
+  averageReturn Float?   // Average return on trades
+  medianReturn  Float?   // Median return on trades
+  numberOfTrades Int     @default(0)
+  realizedPnL   String?  // Realized profit/loss
+  unrealizedPnL String?  // Unrealized profit/loss
+  firstSeen     DateTime?
+  lastActive    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  transactions      Transaction[]
+  relationships     WalletRelationship[]
+  relatedWallets    WalletRelationship[] @relation("related_wallets")
+  deployers         Deployer[]
+}
+
+model Transaction {
+  id            String   @id @default(cuid())
+  wallet        Wallet   @relation(fields: [walletId], references: [id])
+  walletId      String
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  txHash        String   @unique
+  type          String   // "buy", "sell"
+  amount        String   // Amount of token
+  price         String?  // Price at time of transaction
+  timestamp     DateTime
+  blockNumber   Int?
+  createdAt     DateTime @default(now())
+
+  @@index([walletId])
+  @@index([tokenId])
+  @@index([timestamp])
+}
+
+model WalletRelationship {
+  id            String   @id @default(cuid())
+  wallet1       Wallet   @relation(fields: [wallet1Id], references: [id])
+  wallet1Id     String
+  wallet2       Wallet   @relation("related_wallets", fields: [wallet2Id], references: [id])
+  wallet2Id     String
+  relationshipType String // "common_funding", "coordinated_trading", etc
+  confidence    String   @default("medium") // low, medium, high
+  evidence      String?  // Description of why related
+  detectedAt    DateTime @default(now())
+
+  @@unique([wallet1Id, wallet2Id])
+  @@index([wallet1Id])
+}
+
+// ==================== DEPLOYER ====================
+model Deployer {
+  id            String   @id @default(cuid())
+  wallet        Wallet   @relation(fields: [walletId], references: [id])
+  walletId      String   @unique
+  previousLaunches Int    @default(0)
+  successfulLaunches Int  @default(0)
+  abandonedLaunches Int   @default(0)
+  highRiskOutcomes Int    @default(0)
+  reputation    String   @default("unknown") // unknown, positive, mixed, negative
+  confidence    String   @default("low") // low, medium, high
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tokenLaunches TokenLaunch[]
+}
+
+model TokenLaunch {
+  id            String   @id @default(cuid())
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  chain         Chain    @relation(fields: [chainId], references: [id])
+  chainId       String
+  deployer      Deployer @relation(fields: [deployerId], references: [id])
+  deployerId    String
+  launchTime    DateTime
+  initialPrice  String?
+  initialLiquidity String?
+  outcome       String?  // "success", "abandoned", "rugpull", "unknown"
+  finalPrice    String?  // Final price if completed
+  createdAt     DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([deployerId])
+}
+
+// ==================== SECURITY ====================
+model SecurityScan {
+  id            String   @id @default(cuid())
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  mintAuthority String   @default("pass") // pass, warn, fail
+  freezeAuthority String @default("pass") // pass, warn, fail
+  ownerPrivileges String @default("pass") // pass, warn, fail
+  tradingRestrictions String @default("pass")
+  upgradeability String  @default("pass")
+  feeControls   String   @default("pass")
+  hasHoneypot   Boolean  @default(false)
+  rugRiskLevel  String   @default("low") // low, medium, high, critical
+  notes         String?
+  scannerUsed   String   // "defi", "rugcheck", "manual", etc
+  timestamp     DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([timestamp])
+}
+
+// ==================== RISK & SCORING ====================
+model RiskScore {
+  id            String   @id @default(cuid())
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  contractRisk  Int      // 0-100
+  liquidityRisk Int      // 0-100
+  holderRisk    Int      // 0-100
+  deployerRisk  Int      // 0-100
+  walletRisk    Int      // 0-100
+  volumeRisk    Int      // 0-100
+  marketRisk    Int      // 0-100
+  manipulationRisk Int   // 0-100
+  overallRisk   Int      // 0-100 (weighted average)
+  riskLevel     String   // low, medium, high, critical
+  reasoning     String?  // Why this risk level
+  timestamp     DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([overallRisk])
+  @@index([timestamp])
+}
+
+model MomentumScore {
+  id            String   @id @default(cuid())
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  priceAcceleration Int   // 0-100
+  volumeAcceleration Int  // 0-100
+  holderGrowth  Int      // 0-100
+  buyerGrowth   Int      // 0-100
+  liquidityGrowth Int     // 0-100
+  txGrowth      Int      // 0-100
+  overallMomentum Int     // 0-100
+  status        String   // accelerating, stable, declining
+  primaryDrivers String?  // JSON array of main drivers
+  timestamp     DateTime @default(now())
+  createdAt     DateTime @default(now())
+
+  @@index([tokenId])
+  @@index([timestamp])
+}
+
+// ==================== USER FEATURES ====================
+model Watchlist {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  name      String   @default("My Watchlist")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items WatchlistItem[]
+
+  @@index([userId])
+}
+
+model WatchlistItem {
+  id          String   @id @default(cuid())
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  watchlistId String
+  token       Token    @relation(fields: [tokenId], references: [id])
+  tokenId     String
+  addedAt     DateTime @default(now())
+
+  @@unique([watchlistId, tokenId])
+  @@index([watchlistId])
+}
+
+model Alert {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  name          String
+  type          String   // "liquidity_change", "price_change", "volume_spike", etc
+  condition     String   // JSON object describing the condition
+  threshold     String   // Threshold value
+  isActive      Boolean  @default(true)
+  triggered     Boolean  @default(false)
+  triggeredAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model TradeJournal {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  token         Token    @relation(fields: [tokenId], references: [id])
+  tokenId       String
+  entryPrice    String
+  exitPrice     String?
+  positionSize  String
+  entryTime     DateTime
+  exitTime      DateTime?
+  reason        String?  // Why entered
+  riskScore     Int?     // Risk score at entry
+  opportunityScore Int?  // Opportunity score at entry
+  result        String?  // "win", "loss", "breakeven", "open"
+  profitLoss    String?  // Calculated PnL
+  profitLossPercent Float?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@index([tokenId])
+  @@index([entryTime])
+}
